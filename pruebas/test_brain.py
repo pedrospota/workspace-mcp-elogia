@@ -47,6 +47,12 @@ comprueba("manda el secreto en Authorization", pet["headers"]["Authorization"] =
 comprueba("manda el resource (RFC 8707)", pet["json"].get("resource", "").endswith("/mcp"))
 comprueba("NO manda el secreto en el cuerpo", "secreto" not in str(pet["json"]))
 
+# 1b) la caducidad NO se estampa a lo loco: como maximo BRAIN_TOKEN_TTL_S
+import time as _t
+comprueba("caduca pronto (no se fia del token de Google mas de lo debido)",
+          getattr(t, "expires_at", 0) - int(_t.time()) <= prov.BRAIN_TOKEN_TTL_S + 2,
+          f"le puso {getattr(t,'expires_at',0) - int(_t.time())}s")
+
 # 2) persona reconocida pero SIN permiso de Google -> se rechaza, no se cuela
 RESPUESTAS["responder"] = RespFalsa(200, {"active": True, "email": "b@elogia.net",
                                           "motivo": "te falta Drive"})

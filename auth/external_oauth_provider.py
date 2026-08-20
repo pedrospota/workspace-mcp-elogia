@@ -49,6 +49,15 @@ BRAIN_RESOURCE = os.getenv("WORKSPACE_MCP_RESOURCE", "")
 BRAIN_RESOURCE_NAME = os.getenv(
     "BRAIN_RESOURCE_NAME", "Google Workspace de Elogia - cada quien entra con su propio Google"
 )
+# Cuanto damos por bueno el token de Google que nos da el brain.
+#
+# Corto A PROPOSITO. El brain nos entrega un token de Google que ya puede
+# llevar rato vivo — no nos dice cuanto le queda, y los de Google duran ~1h.
+# Si aqui estampamos SESSION_TIME (hasta 24h), acabariamos usando un token
+# muerto y devolviendo 401 sin poder renovarlo. Con 5 minutos, lo peor que
+# pasa es una llamada de mas al introspect, que ademas es la que deja rastro
+# en el registro del brain. Barato y honesto.
+BRAIN_TOKEN_TTL_S = int(os.getenv("BRAIN_TOKEN_TTL_S", "300"))
 
 
 def brain_configurado() -> bool:
@@ -193,7 +202,7 @@ class ExternalOAuthProvider(GoogleProvider):
             return WorkspaceAccessToken(
                 token=google_token,          # <- de aqui abajo, un token de Google normal
                 scopes=list(getattr(self, "required_scopes", []) or []),
-                expires_at=int(time.time()) + get_session_time(),
+                expires_at=int(time.time()) + min(BRAIN_TOKEN_TTL_S, get_session_time()),
                 claims={"email": email},
                 client_id=self._client_id,
                 email=email,
