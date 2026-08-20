@@ -72,7 +72,7 @@ python3 pruebas/test_brain.py
 python3 pruebas/test_brain.py
 ```
 
-14 comprobaciones con un brain falso, sin red: camino feliz, persona sin permiso de
+19 comprobaciones con un brain falso, sin red: camino feliz, persona sin permiso de
 Google, token no activo, secreto rechazado, **brain caído (falla cerrado, no se cuela
 nadie)**, y que un `ya29.*` siga yendo por el camino de upstream.
 

@@ -57,7 +57,23 @@ BRAIN_RESOURCE_NAME = os.getenv(
 # muerto y devolviendo 401 sin poder renovarlo. Con 5 minutos, lo peor que
 # pasa es una llamada de mas al introspect, que ademas es la que deja rastro
 # en el registro del brain. Barato y honesto.
-BRAIN_TOKEN_TTL_S = int(os.getenv("BRAIN_TOKEN_TTL_S", "300"))
+def _ttl_del_entorno() -> int:
+    """Un numero malo aqui NO puede tumbar el arranque: se avisa y se sigue."""
+    crudo = os.getenv("BRAIN_TOKEN_TTL_S", "").strip()
+    if not crudo:
+        return 300
+    try:
+        v = int(crudo)
+    except ValueError:
+        logger.warning("BRAIN_TOKEN_TTL_S no es un numero (%r); uso 300", crudo)
+        return 300
+    if v < 30 or v > 3600:
+        logger.warning("BRAIN_TOKEN_TTL_S=%s fuera de [30,3600]; lo ajusto", v)
+        return min(3600, max(30, v))
+    return v
+
+
+BRAIN_TOKEN_TTL_S = _ttl_del_entorno()
 
 
 def brain_configurado() -> bool:
