@@ -1,0 +1,32 @@
+name: construir imagen
+
+# La imagen se construye AQUI y se publica en ghcr, no en Coolify. Asi Coolify
+# no necesita acceso a este repo privado: solo tira de la imagen, igual que
+# hacia con la oficial. Cambiar de vuelta = volver a poner la imagen de upstream.
+on:
+  push:
+    branches: [feat-brain, main]
+  workflow_dispatch:
+
+jobs:
+  imagen:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: pruebas (antes de publicar nada)
+        run: python3 pruebas/test_brain.py
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/pedrospota/workspace-mcp-elogia:latest
+            ghcr.io/pedrospota/workspace-mcp-elogia:${{ github.sha }}
