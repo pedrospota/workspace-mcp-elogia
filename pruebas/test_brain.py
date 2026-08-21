@@ -47,12 +47,6 @@ comprueba("manda el secreto en Authorization", pet["headers"]["Authorization"] =
 comprueba("manda el resource (RFC 8707)", pet["json"].get("resource", "").endswith("/mcp"))
 comprueba("NO manda el secreto en el cuerpo", "secreto" not in str(pet["json"]))
 
-# 1b) la caducidad NO se estampa a lo loco: como maximo BRAIN_TOKEN_TTL_S
-import time as _t
-comprueba("caduca pronto (no se fia del token de Google mas de lo debido)",
-          getattr(t, "expires_at", 0) - int(_t.time()) <= prov.BRAIN_TOKEN_TTL_S + 2,
-          f"le puso {getattr(t,'expires_at',0) - int(_t.time())}s")
-
 # 2) persona reconocida pero SIN permiso de Google -> se rechaza, no se cuela
 RESPUESTAS["responder"] = RespFalsa(200, {"active": True, "email": "b@elogia.net",
                                           "motivo": "te falta Drive"})
@@ -86,14 +80,6 @@ prov2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(prov2)
 comprueba("sin configurar -> brain desactivado", prov2.brain_configurado() is False)
 p2 = prov2.ExternalOAuthProvider(client_id="c", client_secret="s", required_scopes=["s1"])
 comprueba("sin configurar -> token opaco va a upstream", asyncio.run(p2.verify_token("opaco")) == "UPSTREAM")
-
-# 8) una variable con basura no puede tumbar el arranque
-for valor, esperado in (("no-soy-un-numero", 300), ("", 300), ("5", 30), ("999999", 3600), ("600", 600)):
-    os.environ["BRAIN_TOKEN_TTL_S"] = valor
-    sp = importlib.util.spec_from_file_location("p3_" + valor, "auth/external_oauth_provider.py")
-    m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
-    comprueba(f"BRAIN_TOKEN_TTL_S={valor!r} -> {esperado}", m.BRAIN_TOKEN_TTL_S == esperado, m.BRAIN_TOKEN_TTL_S)
-os.environ.pop("BRAIN_TOKEN_TTL_S", None)
 
 print()
 print("TODO OK" if not fallos else f"{len(fallos)} FALLO(S): {fallos}")

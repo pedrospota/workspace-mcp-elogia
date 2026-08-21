@@ -6,21 +6,6 @@ access tokens (ya29.*) are issued by external systems and need validation.
 
 This provider acts as a Resource Server only - it validates tokens issued by
 Google's Authorization Server but does not issue tokens itself.
-
-=== PARCHE DE ELOGIA ===============================================
-Anadido: soporte para el brain de Elogia como servidor de autorizacion.
-
-El de arriba (upstream) espera que el Bearer SEA un token de Google. El brain
-no manda tokens de Google al cliente: manda uno opaco suyo, y guarda el
-refresh de Google. Asi, si le roban el disco a este MCP no se llevan el acceso
-permanente de nadie, y despedir a alguien es borrar una fila en `user_tokens`.
-
-Por eso aqui, cuando el Bearer NO empieza por `ya29.`, se le pregunta al brain
-(RFC 7662) y se CAMBIA el token opaco por el de Google que devuelve. De ahi
-para abajo el codigo de upstream no se entera: ve un token de Google normal.
-
-Mismo patron que `ga4elo`. Se toca UN fichero a proposito: ver README.
-====================================================================
 """
 
 import functools
@@ -40,79 +25,6 @@ logger = logging.getLogger(__name__)
 
 # Google's OAuth 2.0 Authorization Server
 GOOGLE_ISSUER_URL = "https://accounts.google.com"
-
-# --- PARCHE ELOGIA: el brain como servidor de autorizacion ---------------
-BRAIN_ISSUER = os.getenv("BRAIN_ISSUER", "").rstrip("/")
-BRAIN_INTROSPECT_URL = os.getenv("BRAIN_INTROSPECT_URL", "")
-BRAIN_MCP_SECRET = os.getenv("BRAIN_MCP_SECRET", "")
-BRAIN_RESOURCE = os.getenv("WORKSPACE_MCP_RESOURCE", "")
-BRAIN_RESOURCE_NAME = os.getenv(
-    "BRAIN_RESOURCE_NAME", "Google Workspace de Elogia - cada quien entra con su propio Google"
-)
-# Cuanto damos por bueno el token de Google que nos da el brain.
-#
-# Corto A PROPOSITO. El brain nos entrega un token de Google que ya puede
-# llevar rato vivo — no nos dice cuanto le queda, y los de Google duran ~1h.
-# Si aqui estampamos SESSION_TIME (hasta 24h), acabariamos usando un token
-# muerto y devolviendo 401 sin poder renovarlo. Con 5 minutos, lo peor que
-# pasa es una llamada de mas al introspect, que ademas es la que deja rastro
-# en el registro del brain. Barato y honesto.
-def _ttl_del_entorno() -> int:
-    """Un numero malo aqui NO puede tumbar el arranque: se avisa y se sigue."""
-    crudo = os.getenv("BRAIN_TOKEN_TTL_S", "").strip()
-    if not crudo:
-        return 300
-    try:
-        v = int(crudo)
-    except ValueError:
-        logger.warning("BRAIN_TOKEN_TTL_S no es un numero (%r); uso 300", crudo)
-        return 300
-    if v < 30 or v > 3600:
-        logger.warning("BRAIN_TOKEN_TTL_S=%s fuera de [30,3600]; lo ajusto", v)
-        return min(3600, max(30, v))
-    return v
-
-
-BRAIN_TOKEN_TTL_S = _ttl_del_entorno()
-
-
-def brain_configurado() -> bool:
-    """Sin las dos piezas no se activa nada: se cae al comportamiento de upstream."""
-    return bool(BRAIN_INTROSPECT_URL and BRAIN_MCP_SECRET)
-
-
-async def introspectar_en_el_brain(token: str) -> Optional[dict]:
-    """Cambia el token opaco del brain por el token de Google de esa persona.
-
-    Devuelve el JSON del brain, o None si no se pudo preguntar. Un fallo de red
-    NO se confunde con un token invalido: se distingue arriba.
-    """
-    import httpx
-
-    cuerpo = {"token": token}
-    if BRAIN_RESOURCE:
-        cuerpo["resource"] = BRAIN_RESOURCE
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as cli:
-            r = await cli.post(
-                BRAIN_INTROSPECT_URL,
-                headers={"Authorization": f"Bearer {BRAIN_MCP_SECRET}"},
-                json=cuerpo,
-            )
-        if r.status_code == 401:
-            logger.error(
-                "brain: nos rechaza el secreto (401). Revisa BRAIN_MCP_SECRET "
-                "contra MCP_SERVICE_SECRET/CRON_SECRET del brain."
-            )
-            return None
-        if r.status_code >= 400:
-            logger.error("brain: introspect devolvio %s", r.status_code)
-            return None
-        return r.json()
-    except Exception as exc:
-        logger.error("brain: no se pudo preguntar al introspect: %s", exc)
-        return None
-# ------------------------------------------------------------------------
 
 # Configurable session time in seconds (default: 1 hour, max: 24 hours)
 _DEFAULT_SESSION_TIME = 3600
@@ -190,41 +102,6 @@ class ExternalOAuthProvider(GoogleProvider):
         Returns:
             AccessToken object if valid, None otherwise
         """
-        # PARCHE ELOGIA: token opaco del brain -> se cambia por el de Google.
-        # Va ANTES del ya29 a proposito: un ya29 sigue funcionando igual, para
-        # no romper el modo de upstream ni las pruebas.
-        if brain_configurado() and not token.startswith("ya29."):
-            datos = await introspectar_en_el_brain(token)
-            if datos is None:
-                # No se pudo PREGUNTAR (red, 5xx, secreto malo). No es lo mismo
-                # que "este token no vale": se rechaza igual, pero el log dice
-                # cual de las dos cosas fue, que es lo que se busca a las 3am.
-                return None
-            if not datos.get("active"):
-                logger.info("brain: token no activo (%s)", datos.get("error") or "sin motivo")
-                return None
-            google_token = datos.get("google_access_token")
-            if not google_token:
-                # El brain SI reconocio a la persona, pero le falta el permiso
-                # de Google. Eso no es un fallo del MCP y se dice con palabras.
-                logger.warning(
-                    "brain: %s identificado pero sin credencial de Google: %s",
-                    datos.get("email"), datos.get("motivo") or "sin motivo",
-                )
-                return None
-
-            email = datos.get("email")
-            logger.info("brain: validado %s", email)
-            return WorkspaceAccessToken(
-                token=google_token,          # <- de aqui abajo, un token de Google normal
-                scopes=list(getattr(self, "required_scopes", []) or []),
-                expires_at=int(time.time()) + min(BRAIN_TOKEN_TTL_S, get_session_time()),
-                claims={"email": email},
-                client_id=self._client_id,
-                email=email,
-                sub=email,
-            )
-
         # For ya29.* access tokens, validate using Google's userinfo API
         if token.startswith("ya29."):
             logger.debug("Validating external Google OAuth access token")
@@ -305,24 +182,17 @@ class ExternalOAuthProvider(GoogleProvider):
             )
             return []
 
-        # PARCHE ELOGIA: si el brain esta configurado, el servidor de
-        # autorizacion es EL BRAIN, no Google. Esto es lo que hace que Claude
-        # mande a la persona al login de Elogia (y por tanto al candado
-        # @elogia.net) en vez de directamente a Google.
-        emisor = BRAIN_ISSUER if (brain_configurado() and BRAIN_ISSUER) else GOOGLE_ISSUER_URL
-        nombre = BRAIN_RESOURCE_NAME if emisor != GOOGLE_ISSUER_URL else "Google Workspace MCP"
-
-        # Create protected resource routes that point at the authorization server
+        # Create protected resource routes that point to Google as the authorization server
         # Pass strings directly - Pydantic validates them during model construction
         protected_routes = create_protected_resource_routes(
             resource_url=resource_url,
-            authorization_servers=[emisor],
+            authorization_servers=[GOOGLE_ISSUER_URL],
             scopes_supported=self.required_scopes,
-            resource_name=nombre,
+            resource_name="Google Workspace MCP",
             resource_documentation=None,
         )
 
         logger.info(
-            f"ExternalOAuthProvider: Created protected resource routes pointing to {emisor}"
+            f"ExternalOAuthProvider: Created protected resource routes pointing to {GOOGLE_ISSUER_URL}"
         )
         return protected_routes

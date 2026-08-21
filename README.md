@@ -40,7 +40,6 @@ Google. Eso es lo que manda a la persona al login de Elogia — y por tanto al c
 | `BRAIN_INTROSPECT_URL` | `https://brain.servertoserver.io/api/mcp/oauth/introspect` |
 | `BRAIN_MCP_SECRET` | = `MCP_SERVICE_SECRET` (o `CRON_SECRET`) del brain |
 | `WORKSPACE_MCP_RESOURCE` | `https://workspacedatamx.servertoserver.io/mcp` |
-| `BRAIN_TOKEN_TTL_S` | opcional, por defecto `300`. Cuánto damos por bueno el token de Google del brain |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | los de siempre |
 | `GOOGLE_MCP_CREDENTIALS_DIR` | `/app/store_creds/credentials` (volumen persistente) |
 
@@ -72,7 +71,7 @@ python3 pruebas/test_brain.py
 python3 pruebas/test_brain.py
 ```
 
-19 comprobaciones con un brain falso, sin red: camino feliz, persona sin permiso de
+13 comprobaciones con un brain falso, sin red: camino feliz, persona sin permiso de
 Google, token no activo, secreto rechazado, **brain caído (falla cerrado, no se cuela
 nadie)**, y que un `ya29.*` siga yendo por el camino de upstream.
 
