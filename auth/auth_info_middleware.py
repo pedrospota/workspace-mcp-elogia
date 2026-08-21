@@ -4,6 +4,7 @@ Authentication middleware to populate context state with user information
 
 import asyncio
 import logging
+import os
 import time
 
 from fastmcp.server.dependencies import get_access_token, get_http_headers
@@ -22,6 +23,65 @@ from auth.request_identity import (
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# --- PARCHE ELOGIA: mandar cada llamada al registro del brain ------------
+# Autenticar en el brain no basta: si la llamada no queda ESCRITA, se pierde
+# al reiniciar el contenedor y no sale en /dashboard/admin/mcp. Esto es lo
+# que hace `ga4elo`, y es lo que convierte "confio en que solo entran los
+# mios" en "puedo demostrar quien hizo que".
+BRAIN_AUDIT_URL = os.getenv("BRAIN_AUDIT_URL", "")
+BRAIN_MCP_SECRET = os.getenv("BRAIN_MCP_SECRET", "")
+BRAIN_AUDIT_SERVER = os.getenv("BRAIN_AUDIT_SERVER", "workspace")
+# Argumentos que NUNCA se mandan: el contenido de un correo o un documento no
+# tiene por que viajar al registro. Se guarda QUE se hizo, no el contenido.
+_ARGS_PROHIBIDOS = {"body", "content", "message_body", "html", "raw", "attachment", "file_data"}
+
+
+def _audit_activo() -> bool:
+    return bool(BRAIN_AUDIT_URL and BRAIN_MCP_SECRET)
+
+
+def _args_seguros(args) -> dict | None:
+    """Recorta los argumentos: fuera contenidos, y nada gigante."""
+    if not isinstance(args, dict):
+        return None
+    fuera = {}
+    for k, v in args.items():
+        if k.lower() in _ARGS_PROHIBIDOS:
+            fuera[k] = "(omitido)"
+        elif isinstance(v, (str, int, float, bool)) or v is None:
+            fuera[k] = v if not isinstance(v, str) else v[:300]
+        else:
+            fuera[k] = str(v)[:300]
+    return fuera or None
+
+
+async def _apuntar_en_el_brain(tool, email, args, ok, ms, detalle=None):
+    """Nunca revienta la llamada: si el registro falla, la herramienta ya
+    respondio y lo suyo es no romperle el dia a nadie por un log."""
+    if not _audit_activo() or not tool:
+        return
+    try:
+        import httpx
+        cuerpo = {
+            "server": BRAIN_AUDIT_SERVER,
+            "user_email": email or "desconocido",
+            "tool": str(tool)[:120],
+            "args": _args_seguros(args),
+            "ok": ok,
+            "ms": int(ms),
+        }
+        if detalle:
+            cuerpo["detalle"] = str(detalle)[:2000]
+        async with httpx.AsyncClient(timeout=6.0) as cli:
+            r = await cli.post(BRAIN_AUDIT_URL,
+                               headers={"Authorization": f"Bearer {BRAIN_MCP_SECRET}"},
+                               json=cuerpo)
+        if r.status_code >= 400:
+            logger.warning("brain audit: %s devolvio %s", tool, r.status_code)
+    except Exception as exc:
+        logger.warning("brain audit: no se pudo apuntar %s: %s", tool, exc)
+# ------------------------------------------------------------------------
 
 
 def _token_fingerprint(token: str) -> str:
@@ -385,12 +445,29 @@ class AuthInfoMiddleware(Middleware):
         """Extract auth info from token and set in context state"""
         logger.debug("Processing tool call authentication")
 
+        # PARCHE ELOGIA: se mide y se apunta en el brain. Se saca aqui el
+        # nombre y los argumentos porque este es el unico sitio por el que
+        # pasan TODAS las llamadas a herramienta.
+        _t0 = time.monotonic()
+        _msg = getattr(context, "message", None)
+        _tool = getattr(_msg, "name", None)
+        _args = getattr(_msg, "arguments", None)
+        _quien = None
+
         try:
             await self._process_request_for_auth(context)
+            try:
+                _ident = await get_request_identity(context.fastmcp_context)
+                _quien = getattr(_ident, "email", None)
+            except Exception:
+                _quien = None
 
             logger.debug("Passing to next handler")
             result = await call_next(context)
             logger.debug("Handler completed")
+            await _apuntar_en_el_brain(
+                _tool, _quien or (_args or {}).get("user_google_email"),
+                _args, True, (time.monotonic() - _t0) * 1000)
             return result
 
         except Exception as e:
@@ -403,6 +480,11 @@ class AuthInfoMiddleware(Middleware):
                 logger.info(f"Authentication check failed: {e}")
             else:
                 logger.error(f"Error in on_call_tool middleware: {e}", exc_info=True)
+            # PARCHE ELOGIA: un fallo tambien se apunta. Un registro que solo
+            # guarda los exitos no sirve para averiguar nada.
+            await _apuntar_en_el_brain(
+                _tool, _quien or (_args or {}).get("user_google_email"),
+                _args, False, (time.monotonic() - _t0) * 1000, detalle=str(e))
             raise
 
     async def on_get_prompt(self, context: MiddlewareContext, call_next):
